@@ -3,6 +3,9 @@ name: Validate Trio PR commits
   push:
     branches:
     - validation/trio-pr-device-tests
+concurrency:
+  group: trio-pr-validation
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -50,7 +53,7 @@ jobs:
         - pr: 1768
           sha: 2e3bc2b9fbb02e5d23cf5295de964eef02e1ce3b
         - pr: 1769
-          sha: c968e10a6627167bce52d2545505b7e181518c04
+          sha: f5c32f45b32bf029881504c73f0bf4b6dc28ecbe
         - pr: 1770
           sha: 72138b6185c87535eb565bbe9d3eb8ab937d9864
         - pr: 1771
