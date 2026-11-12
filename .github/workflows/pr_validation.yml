@@ -1,0 +1,171 @@
+name: Validate Trio PR commits
+'on':
+  push:
+    branches:
+    - validation/trio-pr-device-tests
+permissions:
+  contents: read
+jobs:
+  algorithm-package:
+    name: "Algorithm Package (swift test) \u2014 PR ${{ matrix.pr }}"
+    runs-on: macos-26
+    steps:
+    - name: Select Xcode version
+      run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+    - name: Checkout code
+      uses: actions/checkout@v5
+      with:
+        fetch-depth: 1
+        ref: ${{ matrix.sha }}
+        persist-credentials: false
+    - name: Restore cache
+      id: spm-cache-restore
+      uses: actions/cache/restore@v5
+      with:
+        path: AlgorithmPackage/.build
+        key: ${{ runner.os }}-spm-algorithm-${{ hashFiles('AlgorithmPackage/Package.swift', 'AlgorithmPackage/Package.resolved')
+          }}
+        restore-keys: '${{ runner.os }}-spm-algorithm-
+
+          '
+    - name: Show Swift version
+      run: swift --version
+    - name: Run algorithm tests
+      run: time swift test --package-path AlgorithmPackage
+    - name: Annotate algorithm package results
+      if: always()
+      run: "if [ \"${{ job.status }}\" = \"success\" ]; then\n  echo \"::notice title=Algorithm Package::\u2705 swift test\
+        \ passed\"\n  echo \"\u2705 Algorithm package builds standalone on macOS and all tests passed\" >> $GITHUB_STEP_SUMMARY\n\
+        else\n  echo \"::error title=Algorithm Package::\u274C swift test failed\"\n  {\n    echo \"## \u274C Algorithm package\
+        \ (\\`swift test\\`) failed\"\n    echo \"\"\n    echo \"\\`AlgorithmPackage/Package.swift\\` enumerates its sources\
+        \ by hand, so it\"\n    echo \"drifts when a listed file gains a dependency on a file that is not listed.\"\n    echo\
+        \ \"\"\n    echo \"If the error is \\`cannot find 'X' in scope\\`, add the file declaring \\`X\\`\"\n    echo \"to\
+        \ \\`algorithmModels\\` or \\`algorithmHelpers\\` in that manifest.\"\n  } >> $GITHUB_STEP_SUMMARY\nfi\n"
+      shell: bash
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include: &id001
+        - pr: 1768
+          sha: 2e3bc2b9fbb02e5d23cf5295de964eef02e1ce3b
+        - pr: 1769
+          sha: c968e10a6627167bce52d2545505b7e181518c04
+        - pr: 1770
+          sha: 72138b6185c87535eb565bbe9d3eb8ab937d9864
+        - pr: 1771
+          sha: 88dbfda14bf5d74d108b8358612e19bdbd6c17af
+    timeout-minutes: 60
+  test:
+    name: "Run Unit Tests \u2014 PR ${{ matrix.pr }}"
+    runs-on: macos-26
+    env:
+      DESTINATION: platform=iOS Simulator,name=iPhone 17,OS=26.2
+      DERIVED_DATA: ~/Library/Developer/Xcode/DerivedData
+    steps:
+    - name: Select Xcode version
+      run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+    - name: Checkout code
+      uses: actions/checkout@v5
+      with:
+        fetch-depth: 1
+        submodules: recursive
+        ref: ${{ matrix.sha }}
+        persist-credentials: false
+    - name: Capture submodule state for cache key
+      run: git submodule status --recursive | awk '{print $1, $2}' > .submodule-status
+    - name: Restore DerivedData
+      id: dd-restore
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/Library/Developer/Xcode/DerivedData
+        key: ${{ runner.os }}-dd-${{ hashFiles('**/Package.resolved', '.submodule-status') }}-${{ github.sha }}
+        restore-keys: '${{ runner.os }}-dd-${{ hashFiles(''**/Package.resolved'', ''.submodule-status'') }}-
+
+          ${{ runner.os }}-dd-
+
+          '
+    - name: Cache BuildTools (SwiftFormat)
+      uses: actions/cache@v5
+      with:
+        path: BuildTools/.build
+        key: ${{ runner.os }}-buildtools-${{ hashFiles('BuildTools/Package.swift', 'BuildTools/Package.resolved') }}
+        restore-keys: '${{ runner.os }}-buildtools-
+
+          '
+    - name: List available simulators
+      run: xcrun simctl list devices available
+    - name: Resolve Swift packages
+      run: "set -o pipefail\n_start=$(date +%s)\nxcodebuild -resolvePackageDependencies \\\n  -workspace Trio.xcworkspace\
+        \ \\\n  -scheme \"Trio Tests\" \\\n  -onlyUsePackageVersionsFromResolvedFile || _rc=$?\necho \"Resolve packages|$((\
+        \ $(date +%s) - _start ))\" >> \"$GITHUB_WORKSPACE/.timings\"\nexit ${_rc:-0}\n"
+    - name: Build for testing
+      run: "set -o pipefail\n_start=$(date +%s)\nxcodebuild build-for-testing \\\n  -workspace Trio.xcworkspace \\\n  -scheme\
+        \ \"Trio Tests\" \\\n  -destination \"$DESTINATION\" \\\n  -onlyUsePackageVersionsFromResolvedFile \\\n  -disableAutomaticPackageResolution\
+        \ \\\n  -skipPackagePluginValidation \\\n  -skipMacroValidation \\\n  -quiet \\\n  COMPILATION_CACHE_ENABLE_CACHING=YES\
+        \ \\\n  COMPILER_INDEX_STORE_ENABLE=NO \\\n  CODE_SIGN_IDENTITY=\"-\" \\\n  CODE_SIGN_STYLE=Manual \\\n  DEVELOPMENT_TEAM=\"\
+        \" \\\n  PROVISIONING_PROFILE_SPECIFIER=\"\" \\\n  | tee xcodebuild-build.log || _rc=$?\necho \"Build for testing|$((\
+        \ $(date +%s) - _start ))\" >> \"$GITHUB_WORKSPACE/.timings\"\nexit ${_rc:-0}\n"
+    - name: Surface build errors
+      if: always()
+      run: "if [ -f xcodebuild-build.log ]; then\n  echo \"::group::Build errors (tail)\"\n  grep -nE \"error:|Undefined symbol|PhaseScriptExecution\
+        \ failed|The following build commands failed|BUILD FAILED|Trace/BPT trap\" xcodebuild-build.log | tail -n 80 || echo\
+        \ \"no matching error lines\"\n  echo \"::endgroup::\"\nelse\n  echo \"No xcodebuild-build.log produced.\"\nfi\n"
+    - name: Upload build log
+      if: failure()
+      uses: actions/upload-artifact@v6
+      with:
+        name: xcodebuild-build-log-${{ matrix.pr }}
+        path: xcodebuild-build.log
+        if-no-files-found: ignore
+    - name: Check for uncommitted changes
+      run: "CHANGES=$(git status --porcelain -- . \\\n  ':(exclude).timings' \\\n  ':(exclude).submodule-status' \\\n  ':(exclude)xcodebuild-build.log'\
+        \ \\\n  ':(exclude)xcodebuild.log')\nif [ -n \"$CHANGES\" ]; then\n  echo \"Uncommitted changes detected:\"\n  echo\
+        \ \"$CHANGES\"\n  echo \"$CHANGES\" | while read -r line; do\n    FILE=$(echo $line | cut -c4-)\n    echo \"::warning\
+        \ file=$FILE::Uncommitted change detected\"\n  done\n  exit 0\nelse\n  echo \"No uncommitted changes detected.\"\n\
+        fi\n"
+      shell: bash
+    - name: Run tests
+      id: run_tests
+      run: "set -o pipefail\n_start=$(date +%s)\nxcodebuild test-without-building \\\n  -workspace Trio.xcworkspace \\\n \
+        \ -scheme \"Trio Tests\" \\\n  -destination \"$DESTINATION\" \\\n  -parallel-testing-enabled NO \\\n  2>&1 | tee xcodebuild.log\
+        \ || _rc=$?\necho \"Run tests|$(( $(date +%s) - _start ))\" >> \"$GITHUB_WORKSPACE/.timings\"\nexit ${_rc:-0}\n"
+    - name: Annotate test results
+      if: always()
+      run: "case \"${{ steps.run_tests.outcome }}\" in\n  success)\n    echo \"::notice title=Unit Tests Passed::\u2705 All\
+        \ tests passed\"\n    echo \"\u2705 All tests passed\" >> $GITHUB_STEP_SUMMARY\n    ;;\n  skipped)\n    echo \"::warning\
+        \ title=Unit Tests Skipped::Test phase did not run (build failed earlier)\"\n    echo \"\u26A0\uFE0F Tests did not\
+        \ run \u2014 the build failed before this step.\" >> $GITHUB_STEP_SUMMARY\n    ;;\n  *)\n    echo \"::error title=Unit\
+        \ Tests Failed::xcodebuild test phase failed (exit 65)\"\n    {\n      echo \"## \u274C Test phase failed\"\n    \
+        \  echo \"\"\n      echo \"**Named test failures (if any):**\"\n      echo '```'\n      grep -A 20 \"Failing tests:\"\
+        \ xcodebuild.log 2>/dev/null \\\n        | grep -E '^[[:space:]]+[A-Za-z0-9]+\\..+\\(\\)' | sed 's/^/  - /' \\\n \
+        \       || echo \"(none listed \u2014 likely a crash or launch failure, see indicators below)\"\n      echo '```'\n\
+        \      echo \"\"\n      echo \"**Crash / launch / entitlement indicators:**\"\n      echo '```'\n      grep -nE \"\
+        Testing failed:|\\*\\* TEST.*FAILED|Fatal error|[Cc]rash|Restarting after unexpected exit|could not be launched|Application\
+        \ Group|containerURL|entitlement|Sandbox\" xcodebuild.log 2>/dev/null | tail -n 40 \\\n        || echo \"(no indicators\
+        \ matched \u2014 download the xcodebuild-test-log artifact)\"\n      echo '```'\n    } >> $GITHUB_STEP_SUMMARY\n \
+        \   ;;\nesac\n"
+    - name: Upload test log
+      if: failure()
+      uses: actions/upload-artifact@v6
+      with:
+        name: xcodebuild-test-log-${{ matrix.pr }}
+        path: xcodebuild.log
+        if-no-files-found: ignore
+    - name: Benchmark summary
+      if: always()
+      run: "DD=\"$HOME/Library/Developer/Xcode/DerivedData\"\n{\n  echo \"## \u23F1 CI phase timings\"\n  echo \"\"\n  echo\
+        \ \"| Phase | Duration |\"\n  echo \"| --- | --- |\"\n  if [ -f \"$GITHUB_WORKSPACE/.timings\" ]; then\n    while\
+        \ IFS='|' read -r name secs; do\n      printf '| %s | %dm %02ds |\\n' \"$name\" $((secs/60)) $((secs%60))\n    done\
+        \ < \"$GITHUB_WORKSPACE/.timings\"\n  else\n    echo \"| (no timings captured) | \u2014 |\"\n  fi\n  echo \"\"\n \
+        \ echo \"### Cache signals\"\n  echo \"\"\n  echo \"- DerivedData exact cache hit: \\`${{ steps.dd-restore.outputs.cache-hit\
+        \ }}\\` (false is expected \u2014 warm-start comes from restore-keys)\"\n  dd_size=$(du -sh \"$DD\" 2>/dev/null |\
+        \ cut -f1 || echo \"n/a\")\n  cc_size=$(du -sh \"$DD/CompilationCache.noindex\" 2>/dev/null | cut -f1 || echo \"absent\"\
+        )\n  echo \"- DerivedData size (post-trim): \\`${dd_size}\\`\"\n  echo \"- CompilationCache.noindex size: \\`${cc_size}\\\
+        ` (grows across runs as the Xcode 26 cache warms up)\"\n} >> \"$GITHUB_STEP_SUMMARY\""
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include: *id001
+    timeout-minutes: 60
